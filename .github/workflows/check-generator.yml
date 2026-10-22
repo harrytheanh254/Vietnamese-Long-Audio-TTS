@@ -1,0 +1,46 @@
+name: Check Python generator
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "generate_audio.py"
+      - "requirements.txt"
+      - ".github/workflows/generate_audio.yml"
+      - ".github/workflows/check-generator.yml"
+  pull_request:
+    paths:
+      - "generate_audio.py"
+      - "requirements.txt"
+      - ".github/workflows/generate_audio.yml"
+      - ".github/workflows/check-generator.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile generator and check rate mapping
+        run: |
+          python -m py_compile generate_audio.py
+          python - <<'PY'
+          import generate_audio
+          assert generate_audio.rate_percent("1.0") == "+0%"
+          assert generate_audio.rate_percent("1.25") == "+25%"
+          assert generate_audio.rate_percent("0.75") == "-25%"
+          for name in ("Nam Minh", "Hoài My"):
+              assert name in generate_audio.VOICE_IDS
+          try:
+              generate_audio.rate_percent("3.0")
+          except ValueError:
+              pass
+          else:
+              raise AssertionError("Expected invalid rate to be rejected")
+          print("Generator syntax and rate/voice mappings are valid.")
+          PY
