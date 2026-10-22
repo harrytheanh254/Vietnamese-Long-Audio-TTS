@@ -57,7 +57,7 @@ jobs:
           chunks = split_text(source, 800)
           assert len(chunks) > 1, "Long text should be split into multiple chunks."
           assert all(0 < len(chunk) <= 800 for chunk in chunks)
-          normalize = lambda value: re.sub(r"\\s+", "", value)
+          normalize = lambda value: re.sub(r"\s+", "", value)
           assert normalize(" ".join(chunks)) == normalize(source.strip()), (
               "The split text lost, duplicated, or reordered non-whitespace characters."
           )
