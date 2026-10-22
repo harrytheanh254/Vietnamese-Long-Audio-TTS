@@ -2,6 +2,7 @@ name: Parallel audio end-to-end test
 run-name: "Parallel TTS test · ${{ github.ref_name }}"
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - "test/parallel-audio-e2e"
