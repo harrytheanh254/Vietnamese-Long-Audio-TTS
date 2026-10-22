@@ -1,11 +1,11 @@
 # Generated story text and audio (never commit private content)
 kichban.txt
 truyen.txt
-*.txt
-*.mp3
+*.story.txt
 *.partial.mp3
-audio/
 output.mp3
+*.mp3
+audio/
 
 # Python artifacts
 __pycache__/
