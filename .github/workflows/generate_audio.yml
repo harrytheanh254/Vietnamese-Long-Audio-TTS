@@ -1,0 +1,105 @@
+name: Generate long audio
+run-name: "SẢNH TRUYỆN ${{ inputs.request_id || github.run_number }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: "ID tác vụ do ứng dụng SẢNH TRUYỆN tạo"
+        required: false
+        type: string
+      content_gzip_base64:
+        description: "Nội dung TXT đã nén gzip và mã hóa base64"
+        required: true
+        type: string
+      voice:
+        description: "Giọng đọc"
+        required: true
+        type: choice
+        options:
+          - Nam Minh
+          - Hoài My
+      rate:
+        description: "Tốc độ đọc"
+        required: true
+        type: choice
+        default: "1.0"
+        options:
+          - "0.75"
+          - "1.0"
+          - "1.25"
+          - "1.5"
+          - "1.75"
+          - "2.0"
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: Generate one MP3
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Ensure this repository is private
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          if [ "$REPOSITORY_PRIVATE" != "true" ]; then
+            echo "::error::Refusing to process story text because this repository is not private."
+            exit 1
+          fi
+
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install audio dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Decode story text in the runner
+        env:
+          CONTENT_GZIP_BASE64: ${{ inputs.content_gzip_base64 }}
+        run: |
+          python - <<'PY'
+          import base64
+          import gzip
+          import os
+          from pathlib import Path
+
+          encoded = os.environ.get("CONTENT_GZIP_BASE64", "")
+          if not encoded:
+              raise SystemExit("Thiếu nội dung truyện trong dữ liệu workflow.")
+          try:
+              packed = base64.b64decode(encoded, validate=True)
+              text = gzip.decompress(packed).decode("utf-8")
+          except Exception as exc:
+              raise SystemExit(f"Không giải mã được nội dung truyện: {exc}") from exc
+          if not text.strip():
+              raise SystemExit("Nội dung truyện trống.")
+          Path("kichban.txt").write_text(text, encoding="utf-8")
+          print(f"Đã nhận nội dung truyện ({len(text):,} ký tự). Không in nội dung ra log.")
+          PY
+
+      - name: Generate MP3
+        env:
+          INPUT_VOICE: ${{ inputs.voice }}
+          INPUT_RATE: ${{ inputs.rate }}
+        run: |
+          python generate_audio.py --input kichban.txt --output output.mp3 --voice "$INPUT_VOICE" --rate "$INPUT_RATE" --attempts 1
+
+      - name: Upload MP3 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AU ${{ github.run_number }}
+          path: output.mp3
+          if-no-files-found: error
+          retention-days: 7
