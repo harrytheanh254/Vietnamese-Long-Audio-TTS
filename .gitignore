@@ -1,0 +1,17 @@
+# Generated story text and audio (never commit private content)
+kichban.txt
+truyen.txt
+*.txt
+*.mp3
+*.partial.mp3
+audio/
+output.mp3
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Logs
+*.log
