@@ -1,3 +1,4 @@
+# Test-only workflow: uses synthetic text and never processes a user's story.
 name: Parallel audio end-to-end test
 run-name: "Parallel TTS test · ${{ github.ref_name }}"
 
