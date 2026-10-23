@@ -6,10 +6,6 @@ on:
     inputs:
       request_id:
         description: "ID tác vụ do ứng dụng SẢNH TRUYỆN tạo"
-        required: false
-        type: string
-      content_gzip_base64:
-        description: "Nội dung TXT đã nén gzip và mã hóa base64"
         required: true
         type: string
       voice:
@@ -33,7 +29,7 @@ on:
           - "2.0"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   prepare:
@@ -61,27 +57,31 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Decode story text in the runner
+      - name: Download private story upload
         env:
-          CONTENT_GZIP_BASE64: ${{ inputs.content_gzip_base64 }}
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_ID: ${{ inputs.request_id }}
         run: |
+          set -euo pipefail
+          tag="st-request-${REQUEST_ID}"
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}")"
+          asset_id="$(printf '%s' "$release_json" | jq -r '[.assets[]? | select(.name == "story.txt")][0].id // empty')"
+          if [ -z "$asset_id" ]; then
+            echo "::error::Không tìm thấy tệp story.txt cho request ${REQUEST_ID} trong release tạm."
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+            -H "Accept: application/octet-stream" > kichban.txt
           python - <<'PY'
-          import base64
-          import gzip
-          import os
           from pathlib import Path
 
-          encoded = os.environ.get("CONTENT_GZIP_BASE64", "")
-          if not encoded:
-              raise SystemExit("Thiếu nội dung truyện trong dữ liệu workflow.")
+          path = Path("kichban.txt")
           try:
-              packed = base64.b64decode(encoded, validate=True)
-              text = gzip.decompress(packed).decode("utf-8")
-          except Exception as exc:
-              raise SystemExit(f"Không giải mã được nội dung truyện: {exc}") from exc
+              text = path.read_text(encoding="utf-8")
+          except UnicodeError as exc:
+              raise SystemExit(f"Tệp truyện không phải UTF-8 hợp lệ: {exc}") from exc
           if not text.strip():
               raise SystemExit("Nội dung truyện trống.")
-          Path("kichban.txt").write_text(text, encoding="utf-8")
           print(f"Đã nhận nội dung truyện ({len(text):,} ký tự). Không in nội dung ra log.")
           PY
 
@@ -231,3 +231,27 @@ jobs:
           path: output.mp3
           if-no-files-found: error
           retention-days: 7
+
+  cleanup-upload:
+    name: Delete temporary story upload
+    if: always()
+    needs:
+      - prepare
+      - synthesize
+      - merge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Delete temporary release and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          set -euo pipefail
+          tag="st-request-${REQUEST_ID}"
+          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq .id 2>/dev/null || true)"
+          if [ -n "$release_id" ]; then
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}" || true
+          fi
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" || true
