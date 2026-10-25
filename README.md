@@ -7,7 +7,7 @@ Bộ tạo một file MP3 từ toàn bộ văn bản tiếng Việt bằng Edge-
 - Đọc toàn bộ file TXT UTF-8 và tạo ra một file MP3 duy nhất.
 - Hỗ trợ giọng `Nam Minh` và `Hoài My`; tốc độ từ 0.5 đến 2.0.
 - Thử lại theo số lần được chỉ định nếu dịch vụ TTS gặp lỗi.
-- Workflow GitHub Actions nhận nội dung đã nén từ ứng dụng, chia theo ranh giới đoạn/câu (mục tiêu khoảng 3.000 ký tự mỗi phần), tạo tối đa 4 phần song song, rồi ghép thành một MP3 dưới artifact tên `AU <run_number>`. Ứng dụng vẫn chỉ tải về một file cuối.
+- Workflow GitHub Actions nhận nội dung đã nén từ ứng dụng, chia theo ranh giới đoạn/câu (mục tiêu khoảng 3.000 ký tự mỗi phần), tạo tối đa 6 phần song song (tối đa 6 runner đồng thời), rồi ghép thành một MP3 dưới artifact tên `AU <run_number>`. Ứng dụng vẫn chỉ tải về một file cuối.
 
 ## Dùng trong ứng dụng SẢNH TRUYỆN
 
