@@ -49,15 +49,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Verify private repository
-        env:
-          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
-        run: |
-          if [ "$REPOSITORY_PRIVATE" != "true" ]; then
-            echo "::error::Từ chối xử lý truyện vì repository không ở chế độ private."
-            exit 1
-          fi
-
       - name: Download temporary story upload
         env:
           GH_TOKEN: ${{ github.token }}
