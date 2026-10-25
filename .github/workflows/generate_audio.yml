@@ -64,24 +64,31 @@ jobs:
         run: |
           set -euo pipefail
           tag="st-request-${REQUEST_ID}"
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}")"
-          asset_id="$(printf '%s' "$release_json" | jq -r '[.assets[]? | select(.name == "story.txt")][0].id // empty')"
-          if [ -z "$asset_id" ]; then
-            echo "::error::Không tìm thấy tệp story.txt cho request ${REQUEST_ID} trong release tạm."
+          echo "Looking for temporary upload for request ID: ${REQUEST_ID}"
+          if ! release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" 2>&1)"; then
+            echo "::error::Không tìm thấy release tạm cho request ${REQUEST_ID}. Có thể ứng dụng chưa tải truyện lên GitHub hoặc ID yêu cầu không khớp."
+            echo "$release_json"
             exit 1
           fi
-          gh api "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
-            -H "Accept: application/octet-stream" > kichban.txt
+          asset_id="$(printf '%s' "$release_json" | jq -r '[.assets[]? | select(.name == "story.txt")][0].id // empty')"
+          if [ -z "$asset_id" ]; then
+            echo "::error::Release ${tag} không chứa asset story.txt."
+            printf '%s' "$release_json" | jq -r '.assets[]? | .name' || true
+            exit 1
+          fi
+          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"             -H "Accept: application/octet-stream" > kichban.txt; then
+            echo "::error::Không tải được asset story.txt (asset ID ${asset_id})."
+            exit 1
+          fi
           python - <<'PY'
           from pathlib import Path
-
           path = Path("kichban.txt")
           try:
-              text = path.read_text(encoding="utf-8")
+              text = path.read_text(encoding="utf-8-sig")
           except UnicodeError as exc:
               raise SystemExit(f"Tệp truyện không phải UTF-8 hợp lệ: {exc}") from exc
           if not text.strip():
-              raise SystemExit("Nội dung truyện trống.")
+              raise SystemExit("Nội dung truyện trống hoặc tải xuống không đúng định dạng.")
           print(f"Đã nhận nội dung truyện ({len(text):,} ký tự). Không in nội dung ra log.")
           PY
 
@@ -249,10 +256,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REQUEST_ID: ${{ inputs.request_id }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           tag="st-request-${REQUEST_ID}"
           release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq .id 2>/dev/null || true)"
           if [ -n "$release_id" ]; then
-            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}" || true
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}" || echo "::warning::Không xóa được release tạm."
           fi
-          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" || true
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" 2>/dev/null || echo "Tag tạm không tồn tại hoặc đã được xóa."
+          exit 0
