@@ -244,6 +244,7 @@ jobs:
       contents: write
     steps:
       - name: Delete temporary release and tag
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           REQUEST_ID: ${{ inputs.request_id }}
