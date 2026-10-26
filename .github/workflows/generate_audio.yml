@@ -36,10 +36,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  generate:
-    name: Download, synthesize and merge story
+  split:
+    name: Split chapter into natural chunks
     runs-on: ubuntu-22.04
-    timeout-minutes: 360
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      chunk_count: ${{ steps.matrix.outputs.chunk_count }}
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -75,162 +77,163 @@ jobs:
           print(f"Đã tải truyện: {len(text):,} ký tự.")
           PY
 
-      - name: Split story into chunks
+      - name: Split chapter into natural chunks
         run: |
           set -euo pipefail
           python split_text.py --input kichban.txt --output-dir chunks --target-chars 3000
           python - <<'PY'
           from pathlib import Path
           import re
-
           chunks = sorted(Path("chunks").glob("part_*.txt"))
           if not chunks:
-              raise SystemExit("::error::Không tạo được phần văn bản nào.")
+              raise SystemExit("Không tạo được phần văn bản nào.")
           indices = []
           for path in chunks:
-              match = re.fullmatch(r"part_(\d+)\.txt", path.name)
-              if not match:
-                  raise SystemExit(f"Tên chunk không đúng quy ước: {path.name}")
-              indices.append(int(match.group(1)))
+              m = re.fullmatch(r"part_(\d+)\.txt", path.name)
+              if not m:
+                  raise SystemExit(f"Tên chunk không đúng: {path.name}")
+              indices.append(int(m.group(1)))
               if not path.read_text(encoding="utf-8").strip():
-                  raise SystemExit(f"Chunk văn bản rỗng: {path.name}")
-          expected_indices = list(range(1, len(chunks) + 1))
-          if indices != expected_indices:
-              raise SystemExit(f"Chunk bị thiếu hoặc sai thứ tự: {indices[:10]}")
-          Path("chunk_count.txt").write_text(str(len(chunks)))
-          print(f"Đã xác nhận {len(chunks)} chunk theo đúng thứ tự: {chunks[0].name} → {chunks[-1].name}")
+                  raise SystemExit(f"Chunk rỗng: {path.name}")
+          if indices != list(range(1, len(chunks) + 1)):
+              raise SystemExit(f"Chunk bị thiếu hoặc sai thứ tự: {indices[:12]}")
+          print(f"Đã chia và xác nhận {len(chunks)} đoạn.")
           PY
+
+      - name: Prepare matrix and publish chunks
+        id: matrix
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          chunks = sorted(Path("chunks").glob("part_*.txt"))
+          parts = [p.stem.removeprefix("part_") for p in chunks]
+          print("matrix=" + json.dumps({"part": parts}, separators=(",", ":")))
+          print(f"chunk_count={len(parts)}")
+          PY
+          cat "$GITHUB_OUTPUT"
+      - name: Upload split text chunks
+        uses: actions/upload-artifact@v4
+        with:
+          name: story-chunks
+          path: chunks/part_*.txt
+          if-no-files-found: error
+          retention-days: 1
+
+  synthesize:
+    name: Synthesize part ${{ matrix.part }}
+    needs: split
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJson(needs.split.outputs.matrix) }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download this text chunk
+        uses: actions/download-artifact@v4
+        with:
+          name: story-chunks
+          path: chunks
 
       - name: Install audio dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt imageio-ffmpeg==0.6.0
 
-      - name: Generate MP3 parts in parallel (max 4)
+      - name: Synthesize one MP3 part
         env:
           INPUT_VOICE: ${{ inputs.voice }}
           INPUT_RATE: ${{ inputs.rate }}
+          PART_ID: ${{ matrix.part }}
         run: |
           set -euo pipefail
-          mkdir -p parts
-          python - <<'PY'
-          import os
-          import subprocess
-          import sys
-          from concurrent.futures import ThreadPoolExecutor, as_completed
-          from pathlib import Path
-          import imageio_ffmpeg
+          input="chunks/part_${PART_ID}.txt"
+          output="part_${PART_ID}.mp3"
+          test -s "$input" || { echo "::error::Không tìm thấy chunk $input"; exit 1; }
+          python generate_audio.py --input "$input" --output "$output" \
+            --voice "$INPUT_VOICE" --rate "$INPUT_RATE" --attempts 3
+          test -s "$output" || { echo "::error::MP3 đầu ra rỗng: $output"; exit 1; }
+          ffmpeg_bin="$(python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
+          "$ffmpeg_bin" -hide_banner -v error -i "$output" -f null -
+          echo "Đã tạo và kiểm tra $output ($(stat -c '%s bytes' "$output"))."
 
-          chunks = sorted(Path("chunks").glob("part_*.txt"))
-          expected = int(Path("chunk_count.txt").read_text().strip())
-          if not chunks or len(chunks) != expected:
-              raise SystemExit(f"Invalid chunk count: found {len(chunks)}, expected {expected}.")
+      - name: Upload synthesized MP3 part
+        uses: actions/upload-artifact@v4
+        with:
+          name: mp3-part-${{ matrix.part }}
+          path: part_${{ matrix.part }}.mp3
+          if-no-files-found: error
+          retention-days: 1
 
-          voice = os.environ["INPUT_VOICE"]
-          rate = os.environ["INPUT_RATE"]
-          ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-          ffprobe = str(Path(ffmpeg).with_name(Path(ffmpeg).name.replace("ffmpeg", "ffprobe")))
+  merge:
+    name: Merge parts into one MP3
+    needs: [split, synthesize]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-          def validate_mp3(path):
-              if not path.is_file() or path.stat().st_size < 128:
-                  raise RuntimeError(f"MP3 missing or too small: {path}")
-              # ffmpeg bundled by imageio-ffmpeg does not always ship ffprobe;
-              # decode the stream to a null sink to detect truncated/corrupt media.
-              check = subprocess.run(
-                  [ffmpeg, "-hide_banner", "-v", "error", "-i", str(path),
-                   "-f", "null", "-"],
-                  capture_output=True, text=True
-              )
-              if check.returncode:
-                  raise RuntimeError(f"MP3 decode check failed for {path}: {check.stderr[-1200:]}")
-              return path
+      - name: Install merge dependencies
+        run: python -m pip install imageio-ffmpeg==0.6.0
 
-          def make_part(item):
-              index, source = item
-              output = Path("parts") / f"part_{source.stem.removeprefix('part_')}.mp3"
-              print(f"[START] Part {index}/{len(chunks)}: {source.name}", flush=True)
-              subprocess.run([
-                  sys.executable, "generate_audio.py",
-                  "--input", str(source),
-                  "--output", str(output),
-                  "--voice", voice,
-                  "--rate", rate,
-                  "--attempts", "3",
-              ], check=True)
-              validate_mp3(output)
-              print(f"[VALID] {output.name} ({output.stat().st_size:,} bytes)", flush=True)
-              return output
+      - name: Download all synthesized parts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mp3-part-*
+          path: parts
+          merge-multiple: true
 
-          failures = []
-          with ThreadPoolExecutor(max_workers=4) as pool:
-              futures = {
-                  pool.submit(make_part, (i, chunk)): chunk
-                  for i, chunk in enumerate(chunks, start=1)
-              }
-              for future in as_completed(futures):
-                  try:
-                      output = future.result()
-                      print(f"[DONE] {output.name}", flush=True)
-                  except Exception as exc:
-                      failures.append((futures[future].name, str(exc)))
-                      print(f"[ERROR] {futures[future].name}: {exc}", file=sys.stderr, flush=True)
-
-          if failures:
-              print(f"::error::{len(failures)} parts failed validation or synthesis; refusing to merge.", file=sys.stderr)
-              raise SystemExit(1)
-
-          outputs = sorted(Path("parts").glob("part_*.mp3"))
-          if len(outputs) != expected:
-              raise SystemExit(f"Missing MP3 files: found {len(outputs)}, expected {expected}.")
-          print(f"Generated and validated all {len(outputs)} parts with up to 4 parallel workers.", flush=True)
-          PY
-
-      - name: Merge MP3 parts in numeric order
+      - name: Merge parts in numeric order and validate
+        env:
+          EXPECTED_PARTS: ${{ needs.split.outputs.chunk_count }}
         run: |
           set -euo pipefail
           python - <<'PY'
           import re
           import subprocess
+          import os
           from pathlib import Path
           import imageio_ffmpeg
 
-          def part_number(path):
+          def number(path):
               match = re.fullmatch(r"part_(\d+)\.mp3", path.name)
               if not match:
                   raise SystemExit(f"Tên file MP3 không hợp lệ: {path.name}")
               return int(match.group(1))
 
-          parts = sorted(Path("parts").glob("part_*.mp3"), key=part_number)
-          expected = int(Path("chunk_count.txt").read_text().strip())
-          expected_numbers = list(range(1, expected + 1))
-          actual_numbers = [part_number(p) for p in parts]
-          if len(parts) != expected or actual_numbers != expected_numbers:
-              raise SystemExit(
-                  f"MP3 thiếu/trùng/sai thứ tự: tìm thấy {len(parts)}/{expected}; "
-                  f"các số đầu: {actual_numbers[:12]}"
-              )
+          parts = sorted(Path("parts").glob("part_*.mp3"), key=number)
+          expected = int(os.environ["EXPECTED_PARTS"])
+          actual = [number(p) for p in parts]
+          if len(parts) != expected or actual != list(range(1, expected + 1)):
+              raise SystemExit(f"Thiếu/trùng/sai thứ tự MP3: tìm thấy {len(parts)}/{expected}; số phần: {actual[:20]}")
 
           ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-          # Validate each segment again immediately before concat, then merge in numeric order.
           for part in parts:
               if not part.is_file() or part.stat().st_size < 128:
                   raise SystemExit(f"MP3 rỗng hoặc quá nhỏ: {part.name}")
               check = subprocess.run(
-                  [ffmpeg, "-hide_banner", "-v", "error", "-i", str(part),
-                   "-f", "null", "-"],
+                  [ffmpeg, "-hide_banner", "-v", "error", "-i", str(part), "-f", "null", "-"],
                   capture_output=True, text=True
               )
               if check.returncode:
                   raise SystemExit(f"MP3 lỗi {part.name}: {check.stderr[-1200:]}")
 
           manifest = Path("concat.txt")
-          manifest.write_text(
-              "".join(f"file '{p.resolve().as_posix()}'\n" for p in parts),
-              encoding="utf-8",
-          )
+          manifest.write_text("".join(f"file '{p.resolve().as_posix()}'\n" for p in parts), encoding="utf-8")
           subprocess.run([
-              ffmpeg,
-              "-hide_banner", "-loglevel", "error", "-y",
+              ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
               "-f", "concat", "-safe", "0", "-i", str(manifest),
               "-vn", "-c:a", "libmp3lame", "-b:a", "48k",
               "-ar", "24000", "-ac", "1", "output.mp3",
@@ -238,13 +241,12 @@ jobs:
           out = Path("output.mp3")
           if not out.is_file() or out.stat().st_size < 128:
               raise SystemExit("MP3 cuối cùng không hợp lệ.")
-          final_check = subprocess.run(
-              [ffmpeg, "-hide_banner", "-v", "error", "-i", str(out),
-               "-f", "null", "-"],
+          check = subprocess.run(
+              [ffmpeg, "-hide_banner", "-v", "error", "-i", str(out), "-f", "null", "-"],
               capture_output=True, text=True
           )
-          if final_check.returncode:
-              raise SystemExit(f"MP3 cuối cùng không giải mã được: {final_check.stderr[-1200:]}")
+          if check.returncode:
+              raise SystemExit(f"MP3 cuối cùng không giải mã được: {check.stderr[-1200:]}")
           print(f"Đã ghép {len(parts)} phần theo thứ tự số; kích thước {out.stat().st_size:,} bytes.")
           PY
 
@@ -256,8 +258,13 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Delete temporary story upload
-        if: always()
+  cleanup:
+    name: Delete temporary story upload
+    needs: [split, synthesize, merge]
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Delete temporary story release
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
