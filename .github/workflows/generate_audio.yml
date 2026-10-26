@@ -92,7 +92,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt imageio-ffmpeg==0.6.0
 
-      - name: Generate MP3 parts in parallel (max 6)
+      - name: Generate MP3 parts sequentially in story order
         env:
           INPUT_VOICE: ${{ inputs.voice }}
           INPUT_RATE: ${{ inputs.rate }}
@@ -103,21 +103,20 @@ jobs:
           import os
           import subprocess
           import sys
-          from concurrent.futures import ThreadPoolExecutor, as_completed
           from pathlib import Path
 
           chunks = sorted(Path("chunks").glob("part_*.txt"))
           expected = int(Path("chunk_count.txt").read_text().strip())
           if not chunks or len(chunks) != expected:
-              raise SystemExit(f"Số chunk không hợp lệ: có {len(chunks)}, cần {expected}.")
+              raise SystemExit(f"Invalid chunk count: found {len(chunks)}, expected {expected}.")
 
           voice = os.environ["INPUT_VOICE"]
           rate = os.environ["INPUT_RATE"]
 
-          def make_part(item):
-              index, source = item
+          # Generate one by one in source order to remove parallel scheduling as a variable.
+          for index, source in enumerate(chunks, start=1):
               output = Path("parts") / f"part_{source.stem.removeprefix('part_')}.mp3"
-              print(f"[START] Phần {index}/{len(chunks)}: {source.name}", flush=True)
+              print(f"[START] Part {index}/{len(chunks)}: {source.name}", flush=True)
               subprocess.run([
                   sys.executable, "generate_audio.py",
                   "--input", str(source),
@@ -126,30 +125,12 @@ jobs:
                   "--rate", rate,
                   "--attempts", "3",
               ], check=True)
-              return output
-
-          failures = []
-          with ThreadPoolExecutor(max_workers=6) as pool:
-              futures = {
-                  pool.submit(make_part, (i, chunk)): chunk
-                  for i, chunk in enumerate(chunks, start=1)
-              }
-              for future in as_completed(futures):
-                  try:
-                      result = future.result()
-                      print(f"[DONE] {result.name}", flush=True)
-                  except Exception as exc:
-                      failures.append((futures[future].name, str(exc)))
-                      print(f"[ERROR] {futures[future].name}: {exc}", file=sys.stderr, flush=True)
-
-          if failures:
-              print(f"::error::Có {len(failures)} phần tạo audio thất bại; không ghép file thiếu.", file=sys.stderr)
-              raise SystemExit(1)
+              print(f"[DONE] {output.name}", flush=True)
 
           outputs = sorted(Path("parts").glob("part_*.mp3"))
           if len(outputs) != expected:
-              raise SystemExit(f"Thiếu MP3: có {len(outputs)}, cần {expected}.")
-          print(f"Đã tạo đủ {len(outputs)} phần bằng tối đa 6 luồng song song.", flush=True)
+              raise SystemExit(f"Missing MP3 files: found {len(outputs)}, expected {expected}.")
+          print(f"Generated all {len(outputs)} MP3 parts in story order.", flush=True)
           PY
 
       - name: Merge MP3 parts
