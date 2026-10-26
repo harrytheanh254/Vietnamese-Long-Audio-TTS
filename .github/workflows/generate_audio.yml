@@ -79,13 +79,27 @@ jobs:
         run: |
           set -euo pipefail
           python split_text.py --input kichban.txt --output-dir chunks --target-chars 3000
-          count="$(find chunks -maxdepth 1 -type f -name 'part_*.txt' | wc -l)"
-          if [ "$count" -lt 1 ]; then
-            echo "::error::Không tạo được phần văn bản nào."
-            exit 1
-          fi
-          echo "Tổng số phần: $count"
-          echo "$count" > chunk_count.txt
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          chunks = sorted(Path("chunks").glob("part_*.txt"))
+          if not chunks:
+              raise SystemExit("::error::Không tạo được phần văn bản nào.")
+          indices = []
+          for path in chunks:
+              match = re.fullmatch(r"part_(\d+)\.txt", path.name)
+              if not match:
+                  raise SystemExit(f"Tên chunk không đúng quy ước: {path.name}")
+              indices.append(int(match.group(1)))
+              if not path.read_text(encoding="utf-8").strip():
+                  raise SystemExit(f"Chunk văn bản rỗng: {path.name}")
+          expected_indices = list(range(1, len(chunks) + 1))
+          if indices != expected_indices:
+              raise SystemExit(f"Chunk bị thiếu hoặc sai thứ tự: {indices[:10]}")
+          Path("chunk_count.txt").write_text(str(len(chunks)))
+          print(f"Đã xác nhận {len(chunks)} chunk theo đúng thứ tự: {chunks[0].name} → {chunks[-1].name}")
+          PY
 
       - name: Install audio dependencies
         run: |
@@ -105,6 +119,7 @@ jobs:
           import sys
           from concurrent.futures import ThreadPoolExecutor, as_completed
           from pathlib import Path
+          import imageio_ffmpeg
 
           chunks = sorted(Path("chunks").glob("part_*.txt"))
           expected = int(Path("chunk_count.txt").read_text().strip())
@@ -113,6 +128,22 @@ jobs:
 
           voice = os.environ["INPUT_VOICE"]
           rate = os.environ["INPUT_RATE"]
+          ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+          ffprobe = str(Path(ffmpeg).with_name(Path(ffmpeg).name.replace("ffmpeg", "ffprobe")))
+
+          def validate_mp3(path):
+              if not path.is_file() or path.stat().st_size < 128:
+                  raise RuntimeError(f"MP3 missing or too small: {path}")
+              # ffmpeg bundled by imageio-ffmpeg does not always ship ffprobe;
+              # decode the stream to a null sink to detect truncated/corrupt media.
+              check = subprocess.run(
+                  [ffmpeg, "-hide_banner", "-v", "error", "-i", str(path),
+                   "-f", "null", "-"],
+                  capture_output=True, text=True
+              )
+              if check.returncode:
+                  raise RuntimeError(f"MP3 decode check failed for {path}: {check.stderr[-1200:]}")
+              return path
 
           def make_part(item):
               index, source = item
@@ -126,6 +157,8 @@ jobs:
                   "--rate", rate,
                   "--attempts", "3",
               ], check=True)
+              validate_mp3(output)
+              print(f"[VALID] {output.name} ({output.stat().st_size:,} bytes)", flush=True)
               return output
 
           failures = []
@@ -143,27 +176,52 @@ jobs:
                       print(f"[ERROR] {futures[future].name}: {exc}", file=sys.stderr, flush=True)
 
           if failures:
-              print(f"::error::{len(failures)} parts failed; refusing to merge incomplete audio.", file=sys.stderr)
+              print(f"::error::{len(failures)} parts failed validation or synthesis; refusing to merge.", file=sys.stderr)
               raise SystemExit(1)
 
           outputs = sorted(Path("parts").glob("part_*.mp3"))
           if len(outputs) != expected:
               raise SystemExit(f"Missing MP3 files: found {len(outputs)}, expected {expected}.")
-          print(f"Generated all {len(outputs)} parts with up to 4 parallel workers.", flush=True)
+          print(f"Generated and validated all {len(outputs)} parts with up to 4 parallel workers.", flush=True)
           PY
 
-      - name: Merge MP3 parts
+      - name: Merge MP3 parts in numeric order
         run: |
           set -euo pipefail
           python - <<'PY'
+          import re
           import subprocess
           from pathlib import Path
           import imageio_ffmpeg
 
-          parts = sorted(Path("parts").glob("part_*.mp3"))
+          def part_number(path):
+              match = re.fullmatch(r"part_(\d+)\.mp3", path.name)
+              if not match:
+                  raise SystemExit(f"Tên file MP3 không hợp lệ: {path.name}")
+              return int(match.group(1))
+
+          parts = sorted(Path("parts").glob("part_*.mp3"), key=part_number)
           expected = int(Path("chunk_count.txt").read_text().strip())
-          if len(parts) != expected or not parts:
-              raise SystemExit(f"Thiếu MP3: có {len(parts)}, cần {expected}.")
+          expected_numbers = list(range(1, expected + 1))
+          actual_numbers = [part_number(p) for p in parts]
+          if len(parts) != expected or actual_numbers != expected_numbers:
+              raise SystemExit(
+                  f"MP3 thiếu/trùng/sai thứ tự: tìm thấy {len(parts)}/{expected}; "
+                  f"các số đầu: {actual_numbers[:12]}"
+              )
+
+          ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+          # Validate each segment again immediately before concat, then merge in numeric order.
+          for part in parts:
+              if not part.is_file() or part.stat().st_size < 128:
+                  raise SystemExit(f"MP3 rỗng hoặc quá nhỏ: {part.name}")
+              check = subprocess.run(
+                  [ffmpeg, "-hide_banner", "-v", "error", "-i", str(part),
+                   "-f", "null", "-"],
+                  capture_output=True, text=True
+              )
+              if check.returncode:
+                  raise SystemExit(f"MP3 lỗi {part.name}: {check.stderr[-1200:]}")
 
           manifest = Path("concat.txt")
           manifest.write_text(
@@ -171,7 +229,7 @@ jobs:
               encoding="utf-8",
           )
           subprocess.run([
-              imageio_ffmpeg.get_ffmpeg_exe(),
+              ffmpeg,
               "-hide_banner", "-loglevel", "error", "-y",
               "-f", "concat", "-safe", "0", "-i", str(manifest),
               "-vn", "-c:a", "libmp3lame", "-b:a", "48k",
@@ -180,7 +238,14 @@ jobs:
           out = Path("output.mp3")
           if not out.is_file() or out.stat().st_size < 128:
               raise SystemExit("MP3 cuối cùng không hợp lệ.")
-          print(f"Đã ghép {len(parts)} phần; kích thước {out.stat().st_size:,} bytes.")
+          final_check = subprocess.run(
+              [ffmpeg, "-hide_banner", "-v", "error", "-i", str(out),
+               "-f", "null", "-"],
+              capture_output=True, text=True
+          )
+          if final_check.returncode:
+              raise SystemExit(f"MP3 cuối cùng không giải mã được: {final_check.stderr[-1200:]}")
+          print(f"Đã ghép {len(parts)} phần theo thứ tự số; kích thước {out.stat().st_size:,} bytes.")
           PY
 
       - name: Upload final MP3
