@@ -92,7 +92,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt imageio-ffmpeg==0.6.0
 
-      - name: Generate MP3 parts sequentially in story order
+      - name: Generate MP3 parts in parallel (max 4)
         env:
           INPUT_VOICE: ${{ inputs.voice }}
           INPUT_RATE: ${{ inputs.rate }}
@@ -103,6 +103,7 @@ jobs:
           import os
           import subprocess
           import sys
+          from concurrent.futures import ThreadPoolExecutor, as_completed
           from pathlib import Path
 
           chunks = sorted(Path("chunks").glob("part_*.txt"))
@@ -113,8 +114,8 @@ jobs:
           voice = os.environ["INPUT_VOICE"]
           rate = os.environ["INPUT_RATE"]
 
-          # Generate one by one in source order to remove parallel scheduling as a variable.
-          for index, source in enumerate(chunks, start=1):
+          def make_part(item):
+              index, source = item
               output = Path("parts") / f"part_{source.stem.removeprefix('part_')}.mp3"
               print(f"[START] Part {index}/{len(chunks)}: {source.name}", flush=True)
               subprocess.run([
@@ -125,12 +126,30 @@ jobs:
                   "--rate", rate,
                   "--attempts", "3",
               ], check=True)
-              print(f"[DONE] {output.name}", flush=True)
+              return output
+
+          failures = []
+          with ThreadPoolExecutor(max_workers=4) as pool:
+              futures = {
+                  pool.submit(make_part, (i, chunk)): chunk
+                  for i, chunk in enumerate(chunks, start=1)
+              }
+              for future in as_completed(futures):
+                  try:
+                      output = future.result()
+                      print(f"[DONE] {output.name}", flush=True)
+                  except Exception as exc:
+                      failures.append((futures[future].name, str(exc)))
+                      print(f"[ERROR] {futures[future].name}: {exc}", file=sys.stderr, flush=True)
+
+          if failures:
+              print(f"::error::${failures.__len__()} parts failed; refusing to merge incomplete audio.", file=sys.stderr)
+              raise SystemExit(1)
 
           outputs = sorted(Path("parts").glob("part_*.mp3"))
           if len(outputs) != expected:
               raise SystemExit(f"Missing MP3 files: found {len(outputs)}, expected {expected}.")
-          print(f"Generated all {len(outputs)} MP3 parts in story order.", flush=True)
+          print(f"Generated all {len(outputs)} parts with up to 4 parallel workers.", flush=True)
           PY
 
       - name: Merge MP3 parts
