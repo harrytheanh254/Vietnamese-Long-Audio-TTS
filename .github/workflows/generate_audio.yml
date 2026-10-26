@@ -143,7 +143,7 @@ jobs:
                       print(f"[ERROR] {futures[future].name}: {exc}", file=sys.stderr, flush=True)
 
           if failures:
-              print(f"::error::${failures.__len__()} parts failed; refusing to merge incomplete audio.", file=sys.stderr)
+              print(f"::error::{len(failures)} parts failed; refusing to merge incomplete audio.", file=sys.stderr)
               raise SystemExit(1)
 
           outputs = sorted(Path("parts").glob("part_*.mp3"))
