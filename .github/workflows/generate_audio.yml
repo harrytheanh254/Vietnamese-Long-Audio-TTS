@@ -80,7 +80,7 @@ jobs:
       - name: Split chapter into natural chunks
         run: |
           set -euo pipefail
-          python split_text.py --input kichban.txt --output-dir chunks --target-chars 3000
+          python split_text.py --input kichban.txt --output-dir chunks --target-chars 5000
           python - <<'PY'
           from pathlib import Path
           import re
