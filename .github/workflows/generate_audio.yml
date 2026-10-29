@@ -128,7 +128,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 5
+      max-parallel: 100
       matrix: ${{ fromJson(needs.split.outputs.matrix) }}
     steps:
       - name: Check out code
