@@ -16,5 +16,5 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt pytest
-      - run: python -m compileall -q api.py generate_audio.py split_text.py
+      - run: python -m compileall -q generate_audio.py split_text.py run_workflow.py
       - run: pytest -q

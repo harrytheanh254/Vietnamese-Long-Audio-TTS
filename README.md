@@ -1,39 +1,31 @@
 # Vietnamese Long Audio TTS
 
-API tạo MP3 từ văn bản tiếng Việt dài, dùng Edge-TTS. Có chia đoạn, theo dõi tiến độ và tải file MP3.
+Tạo một file MP3 truyện tiếng Việt bằng **GitHub Actions** (không cần dựng API server).
 
-## API
-- `GET /health`: kiểm tra dịch vụ.
-- `POST /v1/jobs`: tạo tác vụ, trả về `job_id`.
-- `GET /v1/jobs/{job_id}`: xem trạng thái.
-- `GET /v1/jobs/{job_id}/audio`: tải MP3 khi hoàn tất.
+## Cách chạy
+1. Mở tab **Actions** của repository.
+2. Chọn **Generate Vietnamese audiobook** → **Run workflow**.
+3. Nhập nội dung, chọn giọng Nam Minh/Hoài My và tốc độ đọc.
+4. Chờ workflow hoàn tất.
+5. Mở phần **Artifacts** của lần chạy và tải `audiobook-<run_id>` (bên trong là `audiobook.mp3`).
 
-Mọi endpoint `/v1` yêu cầu header `X-API-Key`.
+## Cơ chế
+- Tự chia truyện theo ranh giới đoạn/câu, mỗi đoạn khoảng 2.800 ký tự.
+- Chạy tối đa **4 đoạn đồng thời**.
+- Đợi tất cả đoạn hoàn tất; nếu một đoạn lỗi sau 3 lần thử thì workflow báo thất bại.
+- Ghép các MP3 theo đúng thứ tự ban đầu thành một file.
+- Artifact được lưu 3 ngày.
 
-### Tạo tác vụ
-```bash
-curl -X POST "$TTS_URL/v1/jobs" \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: $TTS_API_KEY" \
-  -d '{"text":"Nội dung truyện cần đọc","voice":"Nam Minh","rate":1.0}'
-```
+## Giới hạn hiện tại
+GitHub `workflow_dispatch` giới hạn tổng dữ liệu đầu vào; workflow này đặt giới hạn an toàn 60.000 ký tự cho nội dung truyện. Bản nhận truyện dài hơn cần cơ chế chuyển file riêng thay vì nhét toàn bộ văn bản vào input.
 
-API trả về `job_id`. Poll `status_url` đến khi `status` là `completed`, sau đó tải từ `audio_url`.
-
-Giọng hỗ trợ: `Nam Minh`, `Hoài My`. Tốc độ: 0.5–2.0. Văn bản tối đa 1.000.000 ký tự mỗi job.
-
-## Chạy local
+## Chạy local để kiểm thử
 ```bash
 python -m pip install -r requirements.txt
-# PowerShell:
-$env:TTS_API_KEY = "your-secret-key"
-uvicorn api:app --host 127.0.0.1 --port 8000
+$env:STORY_TEXT = "Nội dung truyện"
+$env:STORY_VOICE = "Nam Minh"
+$env:STORY_RATE = "1.0"
+python run_workflow.py
 ```
 
-Mở `http://127.0.0.1:8000/docs` để thử API.
-
-## Triển khai cloud
-Repo có `render.yaml` để tạo Web Service trên Render. Kết nối repo, deploy, rồi lấy giá trị `TTS_API_KEY` trong Environment. Gói lưu trữ tạm ở `/tmp`; job và MP3 có thể mất khi instance khởi động lại hoặc bị thay thế. Đây là bản nền tảng; production nên bổ sung Redis/queue và object storage bền vững.
-
-## Lưu ý quyền riêng tư
-Repo đang Public. Không commit truyện, API key hay file MP3 vào Git. Khi gửi nội dung tới dịch vụ cloud, nội dung được xử lý trên máy chủ triển khai.
+Không commit truyện hoặc MP3 vào repository.
