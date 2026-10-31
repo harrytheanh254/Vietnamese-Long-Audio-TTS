@@ -21,7 +21,7 @@ def rate_percent(rate: str) -> str:
     return f"{round((value - 1.0) * 100):+d}%"
 
 
-async def generate(text: str, voice: str, rate: str, output: Path, attempts: int) -> None:
+async def generate(text: str, voice: str, rate: str, output: Path | str, attempts: int) -> None:
     try:
         import edge_tts
     except ImportError as exc:
