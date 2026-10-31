@@ -9,6 +9,7 @@ from split_text import split_text
 
 MAX_INPUT_CHARS = 60_000
 MAX_PARALLEL = 4
+TARGET_WORDS = 5_000
 
 
 async def main() -> None:
@@ -22,7 +23,8 @@ async def main() -> None:
     if voice not in ("Nam Minh", "Hoài My"):
         raise ValueError("Giọng đọc không hợp lệ.")
 
-    chunks = split_text(text, target_chars=2800)
+    # Vietnamese text is counted by whitespace-separated units (words).
+    chunks = split_text(text, target_chars=30_000)
     work = Path("output/parts")
     work.mkdir(parents=True, exist_ok=True)
     semaphore = asyncio.Semaphore(MAX_PARALLEL)
@@ -30,7 +32,7 @@ async def main() -> None:
     async def make_part(index: int, chunk: str) -> Path:
         target = work / f"part_{index:05d}.mp3"
         async with semaphore:
-            print(f"[START] Đoạn {index}/{len(chunks)}", flush=True)
+            print(f"[START] Đoạn {index}/{len(chunks)} (~{len(chunk.split()):,} chữ)", flush=True)
             await generate(chunk, voice, rate, target, attempts=3)
             print(f"[DONE] Đoạn {index}/{len(chunks)}", flush=True)
         return target
