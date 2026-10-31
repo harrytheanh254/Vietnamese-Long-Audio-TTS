@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: vietnamese-long-audio-tts
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: TTS_API_KEY
+        generateValue: true
+      - key: TTS_DATA_DIR
+        value: /tmp/vn-long-tts
